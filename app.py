@@ -1,9 +1,11 @@
-from sqlalchemy import create_engine,text
-from dotenv import load_dotenv
 import os
-from langchain.agents import create_agent
-from pydantic import BaseModel,Field
+import re
+
 import pandas as pd
+from dotenv import load_dotenv
+from langchain.agents import create_agent
+from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, text
 
 # Load environment variables from the parent directory
 load_dotenv()
@@ -25,27 +27,112 @@ agent=create_agent(
     )
 
 SYSTEM_PROMPT = """
-You are a SQL expert.Your task is to generate a SQL query based on the table schema.The table schema is as follows:
-Database Server: PostgreSQL
-Database Name: dse_price
-table_name:price_file_data
-columns:
-    - date: date in YYYY-MM-DD format
-    - inst_code: insturment name in string format
-    - open: open price in float format
-    - high: high price in float format
-    - low: low price in float format
-    - close: close price in float format
-    - ltp: last trade price in float format
-    - trade: number of trades in int format
-    - value: value in float format in million
-    - volume: total share buy/sell in int format
+You are an expert PostgreSQL SQL generator.
 
-Your task is to generate a SQL query based on the table schema and it should just the query not the explanation.
-output example:
-    select * from price_file_data where date = '2022-01-01' and inst_code = 'ACI';
+Your job is to return exactly one valid PostgreSQL SELECT query for the user's request.
+Return only the SQL query. Do not return explanations, markdown, comments, or code fences.
 
+Database:
+- Server: PostgreSQL
+- Database: dse_price
+- Table: price_file_data
+
+Schema:
+- date: date in YYYY-MM-DD format
+- inst_code: instrument code in text format
+- open: open price in float format
+- high: high price in float format
+- low: low price in float format
+- close: close price in float format
+- ltp: last trade price in float format
+- trade: number of trades in integer format
+- value: traded value in float format, in millions
+- volume: total traded shares in integer format
+
+Important PostgreSQL rules:
+- Use PostgreSQL syntax only.
+- Only query from price_file_data.
+- Generate read-only SQL. Never use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, or REVOKE.
+- For ranked, lag/lead, rolling, cumulative, or comparison requests, use window functions when appropriate.
+- Prefer CTEs for complex queries if it improves correctness.
+- When the user asks for recent dates, use ORDER BY date DESC with LIMIT unless they explicitly ask for ascending order.
+- For case-insensitive instrument matching, prefer UPPER(inst_code) = UPPER('ACI').
+- If the user mentions moving average, running total, previous day, highest per group, nth row, gain/loss streak, or ranking, use PostgreSQL window functions.
+- If a request is ambiguous, make the safest reasonable assumption and still return one executable query.
+
+Examples:
+SELECT *
+FROM price_file_data
+WHERE date = '2022-01-01' AND UPPER(inst_code) = UPPER('ACI');
+
+WITH ranked AS (
+    SELECT
+        date,
+        inst_code,
+        close,
+        ROW_NUMBER() OVER (PARTITION BY inst_code ORDER BY date DESC) AS rn
+    FROM price_file_data
+)
+SELECT date, inst_code, close
+FROM ranked
+WHERE rn <= 7 AND UPPER(inst_code) = UPPER('ACI')
+ORDER BY date DESC;
+
+SELECT
+    date,
+    inst_code,
+    close,
+    AVG(close) OVER (
+        PARTITION BY inst_code
+        ORDER BY date
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) AS moving_avg_7
+FROM price_file_data
+WHERE UPPER(inst_code) = UPPER('ACI')
+ORDER BY date;
 """
+
+def normalize_sql(raw_sql: str) -> str:
+    cleaned = raw_sql.strip()
+    cleaned = re.sub(r"^```sql\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^```\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    cleaned = cleaned.strip()
+    cleaned = re.sub(r";+\s*$", "", cleaned)
+    return cleaned
+
+
+def validate_sql(sql: str) -> str:
+    normalized = sql.strip().lower()
+    if not normalized.startswith(("select", "with")):
+        raise ValueError("Only SELECT queries are allowed.")
+
+    blocked = ("insert ", "update ", "delete ", "drop ", "alter ", "create ", "truncate ", "grant ", "revoke ")
+    if any(keyword in normalized for keyword in blocked):
+        raise ValueError("Generated query contains a blocked SQL operation.")
+
+    return sql
+
+
+def extract_sql(response) -> str:
+    structured = getattr(response, "get", None)
+    if callable(structured):
+        structured = response.get("structured_response")
+    else:
+        structured = None
+
+    if structured and getattr(structured, "query", None):
+        return structured.query
+
+    if isinstance(response, dict):
+        messages = response.get("messages") or []
+        for message in reversed(messages):
+            content = getattr(message, "content", None) or message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+
+    raise ValueError("Model did not return a SQL query.")
+
 
 def generate_sql(propmt):
     try:
@@ -54,17 +141,21 @@ def generate_sql(propmt):
             {"role": "user", "content": f"{propmt}"}
         ]
         response = agent.invoke({"messages": messages})
-        return response
+        sql = normalize_sql(extract_sql(response))
+        validate_sql(sql)
+        return sql
     except Exception as e:
         return f"Error generating SQL: {str(e)}"
 
 def fetch_data(query):
     try:
+        if isinstance(query, str) and query.startswith("Error generating SQL:"):
+            return query
+
         with engine.connect() as connection:
-            result = pd.read_sql(query['structured_response'].query, con=connection)
+            result = pd.read_sql(text(query), con=connection)
             if result.empty:
                 return "No data found"
         return result
     except Exception as e:
-        return f"Error fetching data: {str(e)}"
-
+        return f"Error fetching data: {str(e)}\nGenerated SQL: {query}"
