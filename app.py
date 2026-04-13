@@ -14,7 +14,10 @@ load_dotenv()
 os.environ['GROQ_API_KEY'] = os.getenv('GROQ_API_KEY')
 
 # database connection
-engine = create_engine(os.getenv('DATABASE_URL'))
+engine = create_engine(
+    os.getenv('DATABASE_URL'),
+    pool_pre_ping=True,
+)
 
 class Query(BaseModel):
     query: str = Field(description="The SQL query to execute")
@@ -65,13 +68,15 @@ Important PostgreSQL rules:
 
 def select_few_shot_examples(prompt: str, max_examples: int = 2) -> str:
     prompt_lower = prompt.lower()
-    selected = []
+    scored_examples = []
 
     for item in FEW_SHOT_EXAMPLES:
-        if any(keyword in prompt_lower for keyword in item["keywords"]):
-            selected.append(item["example"])
-        if len(selected) >= max_examples:
-            break
+        score = sum(1 for keyword in item["keywords"] if keyword in prompt_lower)
+        if score > 0:
+            scored_examples.append((score, item["example"]))
+
+    scored_examples.sort(key=lambda item: item[0], reverse=True)
+    selected = [example for _, example in scored_examples[:max_examples]]
 
     if not selected:
         selected.append(FEW_SHOT_EXAMPLES[0]["example"])
@@ -93,9 +98,15 @@ def validate_sql(sql: str) -> str:
     if not normalized.startswith(("select", "with")):
         raise ValueError("Only SELECT queries are allowed.")
 
+    if ";" in sql.strip().rstrip(";"):
+        raise ValueError("Only a single SQL statement is allowed.")
+
     blocked = ("insert ", "update ", "delete ", "drop ", "alter ", "create ", "truncate ", "grant ", "revoke ")
     if any(keyword in normalized for keyword in blocked):
         raise ValueError("Generated query contains a blocked SQL operation.")
+
+    if "price_file_data" not in normalized:
+        raise ValueError("Query must reference price_file_data.")
 
     return sql
 
@@ -135,14 +146,23 @@ def generate_sql(propmt):
         return f"Error generating SQL: {str(e)}"
 
 def fetch_data(query):
+    connection = None
     try:
         if isinstance(query, str) and query.startswith("Error generating SQL:"):
             return query
 
-        with engine.connect() as connection:
-            result = pd.read_sql(text(query), con=connection)
-            if result.empty:
-                return "No data found"
+        connection = engine.connect()
+        result = pd.read_sql(text(query), con=connection)
+        if result.empty:
+            return "No data found"
         return result
     except Exception as e:
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
         return f"Error fetching data: {str(e)}\nGenerated SQL: {query}"
+    finally:
+        if connection is not None:
+            connection.close()

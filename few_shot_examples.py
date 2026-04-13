@@ -31,7 +31,7 @@ WHERE date = '2024-01-01'
     },
     {
         "name": "date range for one instrument",
-        "keywords": ["between", "from", "to", "date range"],
+        "keywords": ["between", "date range", "from 202", "to 202"],
         "example": """User: show close price of ACI from 2024-01-01 to 2024-01-31
 SQL:
 SELECT
@@ -181,7 +181,7 @@ ORDER BY date;""",
     },
     {
         "name": "top by aggregate",
-        "keywords": ["top", "highest", "lowest", "average", "best", "worst"],
+        "keywords": ["top", "highest", "lowest", "best", "worst", "top 5", "top 10"],
         "example": """User: top 5 instruments by average close price
 SQL:
 SELECT

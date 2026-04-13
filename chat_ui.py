@@ -12,14 +12,8 @@ st.subheader("Instruments Price History")
 # --- Input ---
 prompt = st.text_area("Enter your prompt:", placeholder="e.g. Show me last 7 days closing price of aci")
 
-# --- (Mock) Processing ---
-@st.cache_data(show_spinner=False)
-def mock_df_from_prompt(p: str) -> pd.DataFrame:
-    """
-    Replace this function with whatever logic turns your prompt
-    into a real DataFrame (LLM call, SQL query, API, etc.).
-    For the demo we just return a tiny static table.
-    """
+# --- Processing ---
+def run_prompt(p: str) -> pd.DataFrame:
     query = generate_sql(p)
     return fetch_data(query)
 
@@ -30,7 +24,7 @@ if st.button("Run", type="primary"):
         st.stop()
 
     with st.spinner("Generating ……"):
-        result = mock_df_from_prompt(prompt)
+        result = run_prompt(prompt)
 
     if isinstance(result, str):
         st.warning(result)
