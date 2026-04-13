@@ -7,6 +7,8 @@ from langchain.agents import create_agent
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
+from few_shot_examples import FEW_SHOT_EXAMPLES
+
 # Load environment variables from the parent directory
 load_dotenv()
 os.environ['GROQ_API_KEY'] = os.getenv('GROQ_API_KEY')
@@ -59,38 +61,22 @@ Important PostgreSQL rules:
 - For case-insensitive instrument matching, prefer UPPER(inst_code) = UPPER('ACI').
 - If the user mentions moving average, running total, previous day, highest per group, nth row, gain/loss streak, or ranking, use PostgreSQL window functions.
 - If a request is ambiguous, make the safest reasonable assumption and still return one executable query.
-
-Examples:
-SELECT *
-FROM price_file_data
-WHERE date = '2022-01-01' AND UPPER(inst_code) = UPPER('ACI');
-
-WITH ranked AS (
-    SELECT
-        date,
-        inst_code,
-        close,
-        ROW_NUMBER() OVER (PARTITION BY inst_code ORDER BY date DESC) AS rn
-    FROM price_file_data
-)
-SELECT date, inst_code, close
-FROM ranked
-WHERE rn <= 7 AND UPPER(inst_code) = UPPER('ACI')
-ORDER BY date DESC;
-
-SELECT
-    date,
-    inst_code,
-    close,
-    AVG(close) OVER (
-        PARTITION BY inst_code
-        ORDER BY date
-        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
-    ) AS moving_avg_7
-FROM price_file_data
-WHERE UPPER(inst_code) = UPPER('ACI')
-ORDER BY date;
 """
+
+def select_few_shot_examples(prompt: str, max_examples: int = 2) -> str:
+    prompt_lower = prompt.lower()
+    selected = []
+
+    for item in FEW_SHOT_EXAMPLES:
+        if any(keyword in prompt_lower for keyword in item["keywords"]):
+            selected.append(item["example"])
+        if len(selected) >= max_examples:
+            break
+
+    if not selected:
+        selected.append(FEW_SHOT_EXAMPLES[0]["example"])
+
+    return "\n\nRelevant examples:\n\n" + "\n\n".join(selected)
 
 def normalize_sql(raw_sql: str) -> str:
     cleaned = raw_sql.strip()
@@ -136,8 +122,9 @@ def extract_sql(response) -> str:
 
 def generate_sql(propmt):
     try:
+        prompt_with_examples = f"{SYSTEM_PROMPT}{select_few_shot_examples(propmt)}"
         messages = [
-            {"role": "system", "content":f"{SYSTEM_PROMPT} "},
+            {"role": "system", "content": prompt_with_examples},
             {"role": "user", "content": f"{propmt}"}
         ]
         response = agent.invoke({"messages": messages})
