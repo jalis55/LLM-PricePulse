@@ -62,6 +62,8 @@ Important PostgreSQL rules:
 - Prefer CTEs for complex queries if it improves correctness.
 - When the user asks for recent dates, use ORDER BY date DESC with LIMIT unless they explicitly ask for ascending order.
 - For case-insensitive instrument matching, prefer UPPER(inst_code) = UPPER('ACI').
+- If the user writes the instrument or company name in lowercase or mixed case, still treat it as the instrument code and match it case-insensitively.
+- If the user asks for wildcard, partial, starts with, ends with, contains, or pattern matching, use PostgreSQL ILIKE with % wildcards.
 - If the user mentions moving average, running total, previous day, highest per group, nth row, gain/loss streak, or ranking, use PostgreSQL window functions.
 - If a request is ambiguous, make the safest reasonable assumption and still return one executable query.
 """

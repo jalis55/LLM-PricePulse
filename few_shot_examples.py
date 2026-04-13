@@ -1,7 +1,7 @@
 FEW_SHOT_EXAMPLES = [
     {
         "name": "recent instrument prices",
-        "keywords": ["last", "recent", "closing price", "close price", "price history"],
+        "keywords": ["last", "recent", "closing price", "close price", "price history", "company", "instrument"],
         "example": """User: Show me the closing price of ACI for the last 7 days
 SQL:
 SELECT
@@ -12,6 +12,63 @@ FROM price_file_data
 WHERE UPPER(inst_code) = UPPER('ACI')
 ORDER BY date DESC
 LIMIT 7;""",
+    },
+    {
+        "name": "lowercase company name",
+        "keywords": ["company", "lowercase", "price of company", "last 30 days price"],
+        "example": """User: last 30 days price of company besthldng
+SQL:
+SELECT
+    date,
+    inst_code,
+    open,
+    high,
+    low,
+    close,
+    ltp
+FROM price_file_data
+WHERE UPPER(inst_code) = UPPER('besthldng')
+ORDER BY date DESC
+LIMIT 30;""",
+    },
+    {
+        "name": "contains wildcard match",
+        "keywords": ["wildcard", "contains", "partial", "pattern", "like"],
+        "example": """User: show last 30 days price for companies containing best
+SQL:
+SELECT
+    date,
+    inst_code,
+    open,
+    high,
+    low,
+    close,
+    ltp
+FROM price_file_data
+WHERE inst_code ILIKE '%best%'
+ORDER BY date DESC;""",
+    },
+    {
+        "name": "starts with wildcard match",
+        "keywords": ["starts with", "beginning with", "prefix"],
+        "example": """User: show all companies starting with bex
+SQL:
+SELECT DISTINCT
+    inst_code
+FROM price_file_data
+WHERE inst_code ILIKE 'bex%'
+ORDER BY inst_code;""",
+    },
+    {
+        "name": "ends with wildcard match",
+        "keywords": ["ends with", "suffix"],
+        "example": """User: show all companies ending with holding
+SQL:
+SELECT DISTINCT
+    inst_code
+FROM price_file_data
+WHERE inst_code ILIKE '%holding'
+ORDER BY inst_code;""",
     },
     {
         "name": "price on a date",
