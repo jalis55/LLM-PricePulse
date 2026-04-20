@@ -149,3 +149,20 @@ def top_movers_summary(days: int = 7):
     ORDER BY pct_change DESC;
     """.format(days=days)
     return fetch_data(query)
+
+
+def monthly_summary(year: int):
+    year = int(year)
+    query = """
+    SELECT
+    EXTRACT(MONTH FROM date) AS month_num,
+    TO_CHAR(date, 'Mon') AS month_name,
+    SUM(trade) AS total_trade,
+    SUM(value) AS total_value,
+    SUM(volume) AS total_volume
+    FROM price_file_data
+    WHERE EXTRACT(YEAR FROM date) = {year}
+    GROUP BY EXTRACT(MONTH FROM date), TO_CHAR(date, 'Mon')
+    ORDER BY month_num;
+    """.format(year=year)
+    return fetch_data(query)

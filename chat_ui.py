@@ -8,6 +8,7 @@ from app import fetch_data, generate_sql
 from viz_app import (
     cumulative_trade_summary,
     market_breadth_summary,
+    monthly_summary,
     top_companies_summary,
     top_movers_summary,
     trade_summary,
@@ -243,6 +244,8 @@ if "dashboard_days" not in st.session_state:
     st.session_state.dashboard_days = 7
 if "top_n_companies" not in st.session_state:
     st.session_state.top_n_companies = 5
+if "selected_year" not in st.session_state:
+    st.session_state.selected_year = 2026
 if "nav_loading" not in st.session_state:
     st.session_state.nav_loading = False
 if "latest_query_result" not in st.session_state:
@@ -283,6 +286,12 @@ def render_sidebar() -> None:
                 value=st.session_state.top_n_companies,
                 step=1,
                 key="top_n_companies",
+            )
+            st.selectbox(
+                "Year for monthly charts",
+                options=[2024, 2025, 2026],
+                index=[2024, 2025, 2026].index(st.session_state.selected_year),
+                key="selected_year",
             )
 
 
@@ -438,6 +447,33 @@ def build_top_companies_chart(df: pd.DataFrame, metric: str, title: str, color: 
     return fig
 
 
+def build_monthly_bar_chart(df: pd.DataFrame, metric: str, title: str, color: str):
+    fig = px.bar(
+        df,
+        x="month_name",
+        y=metric,
+        text=metric,
+    )
+    fig.update_traces(
+        marker=dict(color=color),
+        texttemplate="%{y:,.0f}",
+        textposition="outside",
+        hovertemplate="%{x}<br>%{y:,.0f}<extra></extra>",
+    )
+    fig.update_layout(
+        title=title,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(23,32,51,0.75)",
+        font=dict(color="#e5eefc"),
+        margin=dict(l=12, r=12, t=48, b=12),
+        height=320,
+        showlegend=False,
+        xaxis=dict(title=None, gridcolor="#243041", categoryorder="array", categoryarray=df["month_name"].tolist()),
+        yaxis=dict(title=None, gridcolor="#243041"),
+    )
+    return fig
+
+
 def render_dashboard() -> None:
     st.markdown('<div class="main-header"><h1>Market Dashboard</h1><p>Daily trading activity overview</p></div>', unsafe_allow_html=True)
     st.caption(f"Showing the last {st.session_state.dashboard_days} trading days.")
@@ -457,12 +493,20 @@ def render_dashboard() -> None:
         st.error(movers_df)
         return
 
+    monthly_df = monthly_summary(st.session_state.selected_year)
+    if isinstance(monthly_df, str):
+        st.error(monthly_df)
+        return
+
     summary_df = summary_df.copy()
     summary_df["date"] = pd.to_datetime(summary_df["date"], errors="coerce")
     summary_df = summary_df.sort_values("date")
     company_df = company_df.copy()
     movers_df = movers_df.copy()
     movers_df["pct_change"] = pd.to_numeric(movers_df["pct_change"], errors="coerce")
+    monthly_df = monthly_df.copy()
+    monthly_df["month_num"] = pd.to_numeric(monthly_df["month_num"], errors="coerce")
+    monthly_df = monthly_df.sort_values("month_num")
 
     chart_specs = [
         ("total_trade", "Total Trades", "#38bdf8"),
@@ -523,6 +567,23 @@ def render_dashboard() -> None:
             build_top_movers_chart(movers_df, "losers"),
             use_container_width=True,
         )
+
+    st.markdown("---")
+    st.subheader(f"Monthly Activity for {st.session_state.selected_year}")
+
+    monthly_specs = [
+        ("total_trade", "Month-wise Total Trade", "#38bdf8"),
+        ("total_value", "Month-wise Total Value", "#34d399"),
+        ("total_volume", "Month-wise Total Volume", "#fbbf24"),
+    ]
+
+    monthly_col1, monthly_col2, monthly_col3 = st.columns(3)
+    for col, (metric, title, color) in zip((monthly_col1, monthly_col2, monthly_col3), monthly_specs):
+        with col:
+            st.plotly_chart(
+                build_monthly_bar_chart(monthly_df, metric, title, color),
+                use_container_width=True,
+            )
 
 def render_workspace() -> None:
     st.markdown('<div class="main-header"><h1>AI Query</h1><p>Ask questions in plain English</p></div>', unsafe_allow_html=True)
