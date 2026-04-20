@@ -3,39 +3,33 @@ import re
 
 import pandas as pd
 from dotenv import load_dotenv
-from langchain.agents import create_agent
-from pydantic import BaseModel, Field
+from langchain_groq import ChatGroq
 from sqlalchemy import create_engine, text
 
 from few_shot_examples import FEW_SHOT_EXAMPLES
 
-# Load environment variables from the parent directory
-load_dotenv()
-os.environ['GROQ_API_KEY'] = os.getenv('GROQ_API_KEY')
 
-# database connection
+load_dotenv()
+
+
 engine = create_engine(
-    os.getenv('DATABASE_URL'),
+    os.getenv("DATABASE_URL"),
     pool_pre_ping=True,
 )
 
-class Query(BaseModel):
-    query: str = Field(description="The SQL query to execute")
-
-# configure agent
-
-model="groq:qwen/qwen3-32b"
-agent=create_agent(
-        model=model,
-        response_format=Query,
-
-    )
+llm = ChatGroq(
+    model="qwen/qwen3-32b",
+    temperature=0,
+    api_key=os.getenv("GROQ_API_KEY"),
+)
 
 SYSTEM_PROMPT = """
 You are an expert PostgreSQL SQL generator.
 
 Your job is to return exactly one valid PostgreSQL SELECT query for the user's request.
 Return only the SQL query. Do not return explanations, markdown, comments, or code fences.
+Do not think aloud. Do not include reasoning, analysis, or phrases like "Putting it all together".
+If you are unsure, still return exactly one best-effort executable PostgreSQL query.
 
 Database:
 - Server: PostgreSQL
@@ -68,6 +62,7 @@ Important PostgreSQL rules:
 - If a request is ambiguous, make the safest reasonable assumption and still return one executable query.
 """
 
+
 def select_few_shot_examples(prompt: str, max_examples: int = 2) -> str:
     prompt_lower = prompt.lower()
     scored_examples = []
@@ -85,12 +80,46 @@ def select_few_shot_examples(prompt: str, max_examples: int = 2) -> str:
 
     return "\n\nRelevant examples:\n\n" + "\n\n".join(selected)
 
+
 def normalize_sql(raw_sql: str) -> str:
     cleaned = raw_sql.strip()
-    cleaned = re.sub(r"^```sql\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"^```\s*", "", cleaned)
-    cleaned = re.sub(r"\s*```$", "", cleaned)
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"```sql\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"```\s*", "", cleaned)
+    cleaned = cleaned.replace("```", "")
     cleaned = cleaned.strip()
+
+    sql_label_match = re.search(r"(?is)\bSQL\s*:\s*(.*)", cleaned)
+    if sql_label_match:
+        cleaned = sql_label_match.group(1).strip()
+
+    lines = cleaned.splitlines()
+    collected = []
+    started = False
+    for line in lines:
+        if not started and re.match(r"^\s*(with|select)\b", line, flags=re.IGNORECASE):
+            started = True
+        if started:
+            collected.append(line)
+            if ";" in line:
+                break
+    if collected:
+        cleaned = "\n".join(collected).strip()
+    else:
+        statement_match = re.search(
+            r"(?is)((?:with|select)\b[\s\S]*?\bfrom\s+price_file_data\b[\s\S]*?;)",
+            cleaned,
+        )
+        if statement_match:
+            cleaned = statement_match.group(1).strip()
+        else:
+            statement_match = re.search(
+                r"(?is)((?:with|select)\b[\s\S]*?\bfrom\s+price_file_data\b[\s\S]*)",
+                cleaned,
+            )
+            if statement_match:
+                cleaned = statement_match.group(1).strip()
+
     cleaned = re.sub(r";+\s*$", "", cleaned)
     return cleaned
 
@@ -103,7 +132,17 @@ def validate_sql(sql: str) -> str:
     if ";" in sql.strip().rstrip(";"):
         raise ValueError("Only a single SQL statement is allowed.")
 
-    blocked = ("insert ", "update ", "delete ", "drop ", "alter ", "create ", "truncate ", "grant ", "revoke ")
+    blocked = (
+        "insert ",
+        "update ",
+        "delete ",
+        "drop ",
+        "alter ",
+        "create ",
+        "truncate ",
+        "grant ",
+        "revoke ",
+    )
     if any(keyword in normalized for keyword in blocked):
         raise ValueError("Generated query contains a blocked SQL operation.")
 
@@ -114,38 +153,36 @@ def validate_sql(sql: str) -> str:
 
 
 def extract_sql(response) -> str:
-    structured = getattr(response, "get", None)
-    if callable(structured):
-        structured = response.get("structured_response")
-    else:
-        structured = None
+    content = getattr(response, "content", None)
 
-    if structured and getattr(structured, "query", None):
-        return structured.query
+    if isinstance(content, str) and content.strip():
+        return content
 
-    if isinstance(response, dict):
-        messages = response.get("messages") or []
-        for message in reversed(messages):
-            content = getattr(message, "content", None) or message.get("content")
-            if isinstance(content, str) and content.strip():
-                return content
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                text_parts.append(item["text"])
+        if text_parts:
+            return "\n".join(text_parts)
 
     raise ValueError("Model did not return a SQL query.")
 
 
-def generate_sql(propmt):
+def generate_sql(prompt: str):
     try:
-        prompt_with_examples = f"{SYSTEM_PROMPT}{select_few_shot_examples(propmt)}"
+        prompt_with_examples = f"{SYSTEM_PROMPT}{select_few_shot_examples(prompt)}"
         messages = [
             {"role": "system", "content": prompt_with_examples},
-            {"role": "user", "content": f"{propmt}"}
+            {"role": "user", "content": prompt},
         ]
-        response = agent.invoke({"messages": messages})
+        response = llm.invoke(messages)
         sql = normalize_sql(extract_sql(response))
         validate_sql(sql)
         return sql
-    except Exception as e:
-        return f"Error generating SQL: {str(e)}"
+    except Exception as exc:
+        return f"Error generating SQL: {exc}"
+
 
 def fetch_data(query):
     connection = None
@@ -158,13 +195,13 @@ def fetch_data(query):
         if result.empty:
             return "No data found"
         return result
-    except Exception as e:
+    except Exception as exc:
         if connection is not None:
             try:
                 connection.rollback()
             except Exception:
                 pass
-        return f"Error fetching data: {str(e)}\nGenerated SQL: {query}"
+        return f"Error fetching data: {exc}\nGenerated SQL: {query}"
     finally:
         if connection is not None:
             connection.close()
