@@ -1,7 +1,11 @@
+beautifulsoup4
 langchain
 langchain_community
 langchain_groq
+pandas
+plotly
 python-dotenv
+requests
 streamlit
 psycopg2-binary
 SQLAlchemy
