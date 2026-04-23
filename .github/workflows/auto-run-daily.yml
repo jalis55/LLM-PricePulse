@@ -2,7 +2,13 @@ name: Daily Auto Run
 
 on:
   schedule:
-    - cron: "0 13 * * *"
+    - cron: "0 10 * * *"
+  push:
+    branches:
+      - developer
+  pull_request:
+    branches:
+      - developer
   workflow_dispatch:
 
 jobs:
